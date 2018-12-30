@@ -1,0 +1,6 @@
+name: Hungergames
+main: me.healpot.hungergames.Hungergames
+author: healpot
+version: ${project.version}
+load: startup
+softdepend: [LibsDisguises, Vault, TerrainControl, ProtocolLib]

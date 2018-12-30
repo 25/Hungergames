@@ -1,0 +1,313 @@
+package me.healpot.hungergames.managers;
+
+import me.healpot.death.DeathCause;
+import me.healpot.hungergames.Hungergames;
+import me.healpot.hungergames.Sounds;
+import me.healpot.hungergames.configs.MainConfig;
+import me.healpot.hungergames.configs.TranslationConfig;
+import me.healpot.hungergames.events.PlayerKilledEvent;
+import me.healpot.hungergames.types.Damage;
+import me.healpot.hungergames.types.Gamer;
+import me.healpot.hungergames.types.HungergamesApi;
+import me.healpot.hungergames.types.Stats;
+import me.healpot.scoreboard.ScoreboardManager;
+import org.bukkit.*;
+import org.bukkit.block.BlockFace;
+import org.bukkit.entity.*;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
+import org.bukkit.scoreboard.DisplaySlot;
+import org.bukkit.util.Vector;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+public class PlayerManager {
+
+    public HashMap<Gamer, Damage> lastDamager = new HashMap<Gamer, Damage>();
+    public ConcurrentLinkedQueue<Gamer> loadGamer = new ConcurrentLinkedQueue<Gamer>();
+    public ConcurrentLinkedQueue<Stats> saveGamer = new ConcurrentLinkedQueue<Stats>();
+    private TranslationConfig cm = HungergamesApi.getConfigManager().getTranslationsConfig();
+    private ConcurrentLinkedQueue<Gamer> gamers = new ConcurrentLinkedQueue<Gamer>();
+    private Hungergames hg = HungergamesApi.getHungergames();
+    private KitManager kits = HungergamesApi.getKitManager();
+    private ArrayList<Integer> nonSolid = new ArrayList<Integer>();
+    private Iterator<Location> spawnItel;
+    private HashMap<Location, Integer[]> spawns = new HashMap<Location, Integer[]>();
+
+    public PlayerManager() {
+        nonSolid.add(0);
+        for (int b = 8; b < 12; b++)
+            nonSolid.add(b);
+        nonSolid.add(Material.SNOW.getId());
+        nonSolid.add(Material.LONG_GRASS.getId());
+        nonSolid.add(Material.RED_MUSHROOM.getId());
+        nonSolid.add(Material.RED_ROSE.getId());
+        nonSolid.add(Material.YELLOW_FLOWER.getId());
+        nonSolid.add(Material.BROWN_MUSHROOM.getId());
+        nonSolid.add(Material.SIGN_POST.getId());
+        nonSolid.add(Material.WALL_SIGN.getId());
+        nonSolid.add(Material.FIRE.getId());
+        nonSolid.add(Material.TORCH.getId());
+        nonSolid.add(Material.REDSTONE_WIRE.getId());
+        nonSolid.add(Material.REDSTONE_TORCH_OFF.getId());
+        nonSolid.add(Material.REDSTONE_TORCH_ON.getId());
+        nonSolid.add(Material.VINE.getId());
+    }
+
+    public static int returnChance(int start) {
+        if (start <= 0)
+            return 0;
+        return new Random().nextInt(start * 2) - start;
+    }
+
+    private String addKitToDeathMessage(String deathMessage, Player p) {
+        String playerKit = cm.getKillMessageNoKit();
+        if (kits.getKitByPlayer(p) != null)
+            playerKit = kits.getKitByPlayer(p).getName();
+        String killMessage = cm.getKillMessageFormatPlayerKit();
+        if (killMessage.contains("%Player%") || killMessage.contains("%Kit%")) {
+            playerKit = killMessage.replace("%Player%", p.getName()).replace("%Kit%", playerKit);
+        } else {
+            playerKit = String.format(killMessage, p.getName(), playerKit);
+        }
+        return deathMessage.replace(p.getName(), playerKit);
+    }
+
+    public void addSpawnPoint(Location loc, int radius, int height) {
+        spawns.put(loc.add(0.000001, 0, 0.000001), new Integer[]{radius, height});
+    }
+
+    public List<Gamer> getAliveGamers() {
+        List<Gamer> aliveGamers = new ArrayList<Gamer>();
+        for (Gamer gamer : gamers)
+            if (gamer.isAlive())
+                aliveGamers.add(gamer);
+        return aliveGamers;
+    }
+
+    public synchronized Gamer getGamer(Entity entity) {
+        for (Gamer g : gamers)
+            if (g.getPlayer() == entity)
+                return g;
+        return null;
+    }
+
+    public synchronized Gamer getGamer(String name) {
+        for (Gamer g : gamers)
+            if (g.getName().equals(name))
+                return g;
+        return null;
+    }
+
+    public List<Gamer> getGamers() {
+        List<Gamer> game = new ArrayList<Gamer>();
+        for (Gamer g : gamers)
+            game.add(g);
+        return game;
+    }
+
+    public Gamer getKiller(Gamer victim) {
+        Damage dmg = lastDamager.get(victim);
+        Gamer backup = null;
+        if (dmg != null)
+            if (dmg.getTime() >= System.currentTimeMillis())
+                backup = dmg.getDamager();
+        return backup;
+    }
+
+    public void killPlayer(Gamer gamer, Entity killer, Location dropLoc, List<ItemStack> drops, DeathCause cause) {
+        if (!hg.doSeconds || hg.currentTime < 0)
+            return;
+        if (killer == null)
+            killer = cause.getKiller(gamer.getPlayer());
+        String deathMessage = cause.getDeathMessage(gamer.getPlayer(), killer);
+        if (killer != null) {
+            if (killer instanceof Player) {
+                Player dmg = (Player) killer;
+                deathMessage = deathMessage.replace("%Weapon%", HungergamesApi.getNameManager().getItemName(dmg.getItemInHand()));
+            }
+        }
+        PlayerKilledEvent event = new PlayerKilledEvent(gamer, killer, getKiller(gamer), cause, deathMessage, dropLoc, drops);
+        Bukkit.getPluginManager().callEvent(event);
+        manageDeath(event);
+    }
+
+    public void killPlayer(Gamer gamer, Entity killer, Location dropLoc, List<ItemStack> drops, DeathCause cause, String deathMsg) {
+        if (!hg.doSeconds || hg.currentTime < 0)
+            return;
+        PlayerKilledEvent event = new PlayerKilledEvent(gamer, killer, getKiller(gamer), cause, deathMsg, dropLoc, drops);
+        Bukkit.getPluginManager().callEvent(event);
+        manageDeath(event);
+    }
+
+    public void killPlayer(Gamer gamer, Entity killer, Location dropLoc, List<ItemStack> drops, String deathMsg) {
+        killPlayer(gamer, killer, dropLoc, drops, DeathCause.UNKNOWN, deathMsg);
+    }
+
+    public void manageDeath(PlayerKilledEvent event) {
+        Gamer killed = event.getKilled();
+        final Player p = killed.getPlayer();
+        p.setHealth(p.getMaxHealth());
+        if (event.isCancelled())
+            return;
+        for (HumanEntity human : new ArrayList<HumanEntity>(p.getInventory().getViewers()))
+            human.closeInventory();
+        p.leaveVehicle();
+        p.eject();
+        p.setLevel(0);
+        p.setExp(0F);
+        if (event.getDeathMessage().equals(ChatColor.stripColor(event.getDeathMessage())))
+            event.setDeathMessage(ChatColor.DARK_RED + event.getDeathMessage());
+        event.setDeathMessage(this.addKitToDeathMessage(
+                event.getDeathMessage().replace("%Remaining%", "" + (getAliveGamers().size() - 1)), p));
+        if (event.getKillerPlayer() != null) {
+            event.getKillerPlayer().addKill();
+            event.setDeathMessage(this.addKitToDeathMessage(event.getDeathMessage(), event.getKillerPlayer().getPlayer()));
+        }
+        Bukkit.broadcastMessage(event.getDeathMessage());
+        int reward = hg.getPrize(getAliveGamers().size()) * killed.getPayMultiplier();
+        if (reward > 0)
+            killed.addBalance(reward);
+        if (killed.getStats() != null) {
+            killed.getStats().addLoss();
+        }
+        killed.getPlayer().getWorld()
+                .playSound(killed.getPlayer().getWorld().getSpawnLocation(), Sounds.AMBIENCE_THUNDER.bukkitSound(), 10000, 2.9F);
+        killed.clearInventory();
+        World world = p.getWorld();
+        for (ItemStack item : event.getDrops()) {
+            if (item == null || item.getType() == Material.AIR || item.containsEnchantment(EnchantmentManager.UNLOOTABLE))
+                continue;
+            else if (item.hasItemMeta())
+                world.dropItemNaturally(event.getDropsLocation(), item.clone()).getItemStack().setItemMeta(item.getItemMeta());
+            else
+                world.dropItemNaturally(event.getDropsLocation(), item);
+        }
+        SpectatorManager.getInstance().activateSpectating(killed);
+        if (HungergamesApi.getConfigManager().getMainConfig().isScoreboardEnabled()) {
+            ScoreboardManager.makeScore(DisplaySlot.SIDEBAR, cm.getScoreboardPlayersLength(), getAliveGamers().size());
+        }
+        hg.checkWinner();
+        p.setVelocity(new Vector());
+        for (PotionEffect effect : p.getActivePotionEffects())
+            p.removePotionEffect(effect.getType());
+        p.teleport(p.getWorld().getHighestBlockAt(p.getLocation()).getLocation().clone().add(0, 10, 0));
+        p.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, 40, 9), true);
+        p.sendBlockChange(p.getLocation(), Material.PORTAL.getId(), (byte) 0);
+        p.sendBlockChange(p.getLocation(), Material.AIR.getId(), (byte) 0);
+        for (Entity entity : p.getWorld().getEntities()) {
+            if (entity instanceof Tameable && ((Tameable) entity).getOwner() == p) {
+                if (entity instanceof Wolf)
+                    ((Wolf) entity).setSitting(true);
+                else if (entity instanceof Ocelot)
+                    ((Ocelot) entity).setSitting(true);
+                else
+                    entity.remove();
+            }
+            if (entity instanceof Creature && ((Creature) entity).getTarget() == p)
+                ((Creature) entity).setTarget(null);
+        }
+        if (HungergamesApi.getConfigManager().getMainConfig().isKickOnDeath() && !p.hasPermission("hungergames.spectate"))
+            p.kickPlayer(String.format(cm.getKickDeathMessage(), event.getDeathMessage()));
+        HungergamesApi.getAbilityManager().unregisterPlayer(p);
+        HungergamesApi.getInventoryManager().updateSpectatorHeads();
+    }
+
+    public Gamer registerGamer(Player p) {
+        Gamer gamer = new Gamer(p);
+        gamers.add(gamer);
+        return gamer;
+    }
+
+    public void removeKilled(Gamer gamer) {
+        lastDamager.remove(gamer);
+        Iterator<Gamer> itel = lastDamager.keySet().iterator();
+        while (itel.hasNext()) {
+            Gamer g = itel.next();
+            if (lastDamager.get(g).getDamager() == gamer)
+                itel.remove();
+        }
+    }
+
+    public void sendToSpawn(Gamer gamer) {
+        final Player p = gamer.getPlayer();
+        Location originalSpawn = p.getWorld().getSpawnLocation();
+        MainConfig main = HungergamesApi.getConfigManager().getMainConfig();
+        int spawnRadius = main.getSpawnRadius();
+        int spawnHeight = main.getSpawnHeight();
+        if (spawns.size() > 0) {
+            if (spawnItel == null || !spawnItel.hasNext())
+                spawnItel = spawns.keySet().iterator();
+            originalSpawn = spawnItel.next();
+            spawnRadius = spawns.get(originalSpawn)[0];
+            spawnHeight = spawns.get(originalSpawn)[1];
+        }
+        Location spawn = originalSpawn.clone();
+        int chances = 0;
+        if (p.isInsideVehicle())
+            p.leaveVehicle();
+        p.eject();
+        boolean foundSpawn = true;
+        if (Math.abs(spawnHeight) > 0 || Math.abs(spawnRadius) > 0) {
+            foundSpawn = false;
+            while (chances < main.getTimesToCheckForValidSpawnPerPlayer()) {
+                chances++;
+                Location newLoc = new Location(p.getWorld(), spawn.getX() + returnChance(spawnRadius), spawn.getY()
+                        + new Random().nextInt(Math.max(1, spawnHeight)), spawn.getZ() + returnChance(spawnRadius));
+                if (nonSolid.contains(newLoc.getBlock().getTypeId())
+                        && nonSolid.contains(newLoc.getBlock().getRelative(BlockFace.UP).getTypeId())) {
+                    while (newLoc.getBlockY() >= 1
+                            && nonSolid.contains(newLoc.getBlock().getRelative(BlockFace.DOWN).getTypeId())) {
+                        newLoc = newLoc.add(0, -1, 0);
+                    }
+                    if (newLoc.getBlockY() <= 1)
+                        continue;
+                    spawn = newLoc;
+                    foundSpawn = true;
+                    break;
+                }
+            }
+        }
+        if (!foundSpawn && spawn.getX() == originalSpawn.getX() && spawn.getY() == originalSpawn.getY()
+                && spawn.getZ() == originalSpawn.getZ()) {
+            spawn = new Location(p.getWorld(), spawn.getX() + returnChance(spawnRadius), 0, spawn.getZ()
+                    + returnChance(spawnRadius));
+            spawn.setY(spawn.getWorld().getHighestBlockYAt(spawn));
+            if (gamer.isAlive() && spawn.getY() <= 1) {
+                spawn.getBlock().setType(Material.GLASS);
+                spawn.setY(spawn.getY() + 1);
+            }
+        }
+        final Location destination = spawn;
+        if (spawn.getX() % 1 == 0 && spawn.getY() % 1 == 0 && spawn.getZ() % 1 == 0)
+            spawn.add(0.5, 0.1, 0.5);
+        destination.setPitch(originalSpawn.getPitch());
+        destination.setYaw(originalSpawn.getYaw());
+        destination.setWorld(p.getWorld());
+        p.teleport(destination);
+        Bukkit.getScheduler().scheduleSyncDelayedTask(hg, new Runnable() {
+            public void run() {
+                p.teleport(destination);
+            }
+        });
+    }
+
+    public Gamer unregisterGamer(Entity entity) {
+        Iterator<Gamer> itel = gamers.iterator();
+        while (itel.hasNext()) {
+            Gamer g = itel.next();
+            if (g.getPlayer() == entity) {
+                itel.remove();
+                return g;
+            }
+        }
+        return null;
+    }
+
+    public void unregisterGamer(Gamer gamer) {
+        gamers.remove(gamer);
+    }
+
+}
